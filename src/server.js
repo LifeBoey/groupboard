@@ -36,7 +36,7 @@ function tooMany(res, seconds, what) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '32kb' })); // plenty for a task (description max 2000 chars)
 app.use(
   session({
     // A random secret per start is fine locally: restarting the server just logs everyone out.
@@ -123,7 +123,7 @@ function validateTask(body, partial) {
 
 // ---------- auth ----------
 
-app.post('/api/signup', (req, res) => {
+app.post('/api/signup', (req, res, next) => {
   const wait = signupsPerIp.retryAfter(req.ip);
   if (wait) return tooMany(res, wait, 'sign-up attempts');
   signupsPerIp.hit(req.ip);
@@ -149,13 +149,14 @@ app.post('/api/signup', (req, res) => {
   const { lastInsertRowid } = db
     .prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)')
     .run(username, hash);
-  req.session.regenerate(() => {
+  req.session.regenerate((err) => {
+    if (err) return next(err);
     req.session.userId = Number(lastInsertRowid);
     res.status(201).json({ id: Number(lastInsertRowid), username });
   });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', (req, res, next) => {
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
 
@@ -172,14 +173,18 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
   loginFailuresPerAccount.reset(accountKey);
-  req.session.regenerate(() => {
+  req.session.regenerate((err) => {
+    if (err) return next(err);
     req.session.userId = user.id;
     res.json({ id: user.id, username: user.username });
   });
 });
 
-app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+app.post('/api/logout', (req, res, next) => {
+  req.session.destroy((err) => {
+    if (err) return next(err);
+    res.json({ ok: true });
+  });
 });
 
 app.get('/api/me', requireLogin, (req, res) => {
@@ -282,9 +287,42 @@ app.delete('/api/tasks/:id', requireLogin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Unknown API routes get a JSON 404, not Express's HTML "Cannot GET" page.
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
+
 // ---------- pages ----------
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// ---------- errors ----------
+
+// Last-resort error handler. Without it, Express's default handler returns an HTML page (with a
+// full stack trace unless NODE_ENV=production, which this app doesn't set) and logs the error. For malformed JSON, that error message quotes part of
+// the request body, which could be a password.
+const CLIENT_ERROR_MESSAGES = {
+  'entity.parse.failed': 'Request body is not valid JSON.',
+  'entity.too.large': 'Request is too large.',
+};
+// Express only treats a middleware as an error handler if it takes all four arguments.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const raw = err.status || err.statusCode;
+  const status = Number.isInteger(raw) && raw >= 400 && raw < 600 ? raw : 500;
+
+  let message;
+  if (status >= 500) {
+    // Server bugs: log the details for us, but only send the client a generic message.
+    console.error(`${req.method} ${req.path} failed:`, err);
+    message = 'Something went wrong on the server.';
+  } else {
+    // Client errors aren't logged: their messages can echo the request body.
+    message = CLIENT_ERROR_MESSAGES[err.type] || 'Invalid request.';
+  }
+
+  const isApi = req.path === '/api' || req.path.startsWith('/api/');
+  if (isApi) res.status(status).json({ error: message });
+  else res.status(status).type('text/plain').send(message);
+});
 
 app.listen(PORT, () => {
   console.log(`GroupBoard running at http://localhost:${PORT}`);

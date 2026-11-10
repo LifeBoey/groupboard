@@ -51,13 +51,22 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       errorEl.textContent = '';
-      const res = await fetch(`/api/${mode}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: form.username.value, password: form.password.value }),
-      });
-      if (res.ok) location.href = '/';
-      else errorEl.textContent = (await res.json()).error || 'Something went wrong.';
+      try {
+        const res = await fetch(`/api/${mode}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: form.username.value, password: form.password.value }),
+        });
+        if (res.ok) {
+          location.href = '/';
+          return;
+        }
+        // The body may not be JSON (e.g. a proxy error page), so don't assume it is.
+        const data = await res.json().catch(() => ({}));
+        errorEl.textContent = data.error || `Something went wrong (error ${res.status}). Please try again.`;
+      } catch {
+        errorEl.textContent = "Can't reach the server. Check it's running and try again.";
+      }
     });
   </script>
 </body>
