@@ -8,6 +8,9 @@ const db = require('./db');
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_USERS = 10;
 const STATUSES = ['todo', 'doing', 'done'];
+// Compared against when the username doesn't exist, so a wrong username takes as long as a
+// wrong password and response timing doesn't reveal which usernames are registered.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
 
 const app = express();
 app.use(express.json());
@@ -48,6 +51,14 @@ function withPermission(task, userId) {
   return { ...task, can_change: canChange(task, userId) };
 }
 
+// True for a real calendar date in YYYY-MM-DD form. Date.parse alone accepts "2026-02-31"
+// (it rolls over to March 3), so check the date survives a round trip unchanged.
+function isRealDate(d) {
+  if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const parsed = new Date(d + 'T00:00:00Z');
+  return !isNaN(parsed) && parsed.toISOString().slice(0, 10) === d;
+}
+
 // Validates task fields from a request body. `partial` = only check fields that are present.
 function validateTask(body, partial) {
   const out = {};
@@ -80,7 +91,7 @@ function validateTask(body, partial) {
   if ('due_date' in body) {
     const d = body.due_date;
     if (d === null || d === '' || d === undefined) out.due_date = null;
-    else if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(Date.parse(d))) {
+    else if (!isRealDate(d)) {
       return { error: 'Due date must be YYYY-MM-DD.' };
     } else out.due_date = d;
   }
@@ -119,7 +130,8 @@ app.post('/api/login', (req, res) => {
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+  const passwordOk = bcrypt.compareSync(password, user ? user.password_hash : DUMMY_HASH);
+  if (!user || !passwordOk) {
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
   req.session.regenerate(() => {

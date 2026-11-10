@@ -38,9 +38,16 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Today's date as YYYY-MM-DD in the user's own timezone (toISOString() would give the UTC date).
+function localToday() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function formatDue(dateStr) {
   if (!dateStr) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localToday();
   const d = new Date(dateStr + 'T00:00:00');
   const label = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   return { label, overdue: dateStr < today };
@@ -114,12 +121,15 @@ async function load() {
 async function moveTask(task, dir) {
   const status = STATUSES[STATUSES.indexOf(task.status) + dir];
   if (!status) return;
+  let error = '';
   try {
     await api('PATCH', `/api/tasks/${task.id}`, { status });
   } catch (err) {
-    boardError.textContent = err.message;
+    error = err.message;
   }
+  // Reload either way (the card may be stale), then show the error — load() clears the banner.
   await load();
+  if (error) boardError.textContent = error;
 }
 
 function openDialog(task) {
@@ -150,6 +160,17 @@ form.addEventListener('submit', async (e) => {
     due_date: form.due_date.value || null,
     status: form.status.value,
   };
+  // Warn before a save that would remove your own right to change this task
+  // (you're not the creator and you're assigning it away from yourself).
+  if (editingId) {
+    const task = tasks.find((t) => t.id === editingId);
+    const keepsAccess = task && (task.created_by === me.id || Number(body.assignee_id) === me.id);
+    if (task && !keepsAccess &&
+        !confirm("After saving, you won't be able to edit, move or delete this task any more " +
+                 '(only its creator or assignee can). Continue?')) {
+      return;
+    }
+  }
   try {
     if (editingId) await api('PATCH', `/api/tasks/${editingId}`, body);
     else await api('POST', '/api/tasks', body);
@@ -181,7 +202,12 @@ document.getElementById('logout').addEventListener('click', async () => {
 });
 
 (async function init() {
-  me = await api('GET', '/api/me');
+  try {
+    me = await api('GET', '/api/me');
+  } catch {
+    return; // api() is already redirecting to the login page
+  }
   document.getElementById('me').textContent = 'Signed in as ' + me.username;
+  document.body.hidden = false; // page stays hidden until we know you're logged in
   await load();
 })();

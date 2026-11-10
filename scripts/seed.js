@@ -16,7 +16,13 @@ for (const name of ['alice', 'ben', 'chloe']) {
   ids[name] = Number(insertUser.run(name, bcrypt.hashSync(DEMO_PASSWORD, 10)).lastInsertRowid);
 }
 
-const inDays = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+// Date n days from today as YYYY-MM-DD, in local time (not UTC).
+const inDays = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 const insertTask = db.prepare(
   `INSERT INTO tasks (title, description, status, assignee_id, due_date, created_by)
