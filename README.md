@@ -25,7 +25,7 @@ Other limits:
 - Any member can create a task and can assign it to anyone in the group, or leave it unassigned.
 - The assignee can hand a task to someone else or unassign themselves. Once they do, the rule no longer lets them change it, unless they also created it.
 - Delete is permanent, after a confirmation prompt.
-- There are no live updates. Click **↻ Refresh** to see teammates' changes.
+- There are no live updates. Click **↻ Refresh** to see teammates' changes. If you act on an outdated card, the server refuses the change (409) instead of overwriting a teammate's work, and the board refreshes.
 
 ## Stack
 
@@ -60,8 +60,8 @@ All routes except signup and login need a logged-in session.
 | GET | `/api/me`, `/api/users` | any member |
 | GET | `/api/tasks` | any member (read) |
 | POST | `/api/tasks` | any member (create) |
-| PATCH | `/api/tasks/:id` | creator or assignee (update / move) |
-| DELETE | `/api/tasks/:id` | creator or assignee (delete) |
+| PATCH | `/api/tasks/:id` | creator or assignee (update / move). The body must include the task's `version`; a stale version gets **409 Conflict** |
+| DELETE | `/api/tasks/:id` | creator or assignee (delete). Optional `version`; a stale one gets 409 |
 
 ## Files
 

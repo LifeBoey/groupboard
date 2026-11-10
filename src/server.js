@@ -184,6 +184,24 @@ app.post('/api/tasks', requireLogin, (req, res) => {
   res.status(201).json(withPermission(getTask(lastInsertRowid), req.session.userId));
 });
 
+// Optimistic concurrency: every write says which `version` of the task it was based on.
+// If someone else has changed the task since, the write is refused with 409 instead of
+// silently overwriting their change.
+const CONFLICT_ERROR =
+  'Someone else changed this task since you loaded the board. The board has been refreshed: check it and try again.';
+
+// Checks the `version` a write was based on. Returns { status, error } to send, or null if OK.
+// `required` is true for PATCH; DELETE accepts a missing version.
+function checkVersion(body, task, required) {
+  const version = body?.version;
+  if (version === undefined && !required) return null;
+  if (!Number.isInteger(version)) {
+    return { status: 400, error: 'Missing or invalid task version. Refresh the board and try again.' };
+  }
+  if (version !== task.version) return { status: 409, error: CONFLICT_ERROR };
+  return null;
+}
+
 // Update (includes moving between columns): creator or assignee only.
 app.patch('/api/tasks/:id', requireLogin, (req, res) => {
   const task = getTask(Number(req.params.id));
@@ -191,27 +209,38 @@ app.patch('/api/tasks/:id', requireLogin, (req, res) => {
   if (!canChange(task, req.session.userId)) {
     return res.status(403).json({ error: 'Only the task creator or assignee can change this task.' });
   }
+  const stale = checkVersion(req.body, task, true);
+  if (stale) return res.status(stale.status).json({ error: stale.error });
+  const version = task.version;
+
   const { data, error } = validateTask(req.body, true);
   if (error) return res.status(400).json({ error });
   const fields = Object.keys(data);
   if (fields.length) {
     const sets = fields.map((f) => `${f} = ?`).join(', ');
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => data[f]),
-      task.id
-    );
+    // `AND version = ?` makes the check-and-write atomic.
+    const result = db
+      .prepare(
+        `UPDATE tasks SET ${sets}, version = version + 1, updated_at = datetime('now')
+         WHERE id = ? AND version = ?`
+      )
+      .run(...fields.map((f) => data[f]), task.id, version);
+    if (result.changes === 0) return res.status(409).json({ error: CONFLICT_ERROR });
   }
   res.json(withPermission(getTask(task.id), req.session.userId));
 });
 
-// Delete: creator or assignee only.
+// Delete: creator or assignee only. `version` is optional here; when given, a stale delete gets 409.
 app.delete('/api/tasks/:id', requireLogin, (req, res) => {
   const task = getTask(Number(req.params.id));
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (!canChange(task, req.session.userId)) {
     return res.status(403).json({ error: 'Only the task creator or assignee can delete this task.' });
   }
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+  const stale = checkVersion(req.body, task, false);
+  if (stale) return res.status(stale.status).json({ error: stale.error });
+  const result = db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(task.id, task.version);
+  if (result.changes === 0) return res.status(409).json({ error: CONFLICT_ERROR });
   res.json({ ok: true });
 });
 
