@@ -229,8 +229,8 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ---------- errors ----------
 
-// Last-resort error handler. Without it, Express's default handler returns an HTML page with a
-// full stack trace and logs the error. For malformed JSON, that error message quotes part of
+// Last-resort error handler. Without it, Express's default handler returns an HTML page (with a
+// full stack trace unless NODE_ENV=production, which this app doesn't set) and logs the error. For malformed JSON, that error message quotes part of
 // the request body, which could be a password.
 const CLIENT_ERROR_MESSAGES = {
   'entity.parse.failed': 'Request body is not valid JSON.',
@@ -252,7 +252,8 @@ app.use((err, req, res, next) => {
     message = CLIENT_ERROR_MESSAGES[err.type] || 'Invalid request.';
   }
 
-  if (req.path.startsWith('/api')) res.status(status).json({ error: message });
+  const isApi = req.path === '/api' || req.path.startsWith('/api/');
+  if (isApi) res.status(status).json({ error: message });
   else res.status(status).type('text/plain').send(message);
 });
 
