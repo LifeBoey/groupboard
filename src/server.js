@@ -4,6 +4,7 @@ const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const { createLimiter } = require('./rateLimit');
 
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_USERS = 10;
@@ -11,6 +12,28 @@ const STATUSES = ['todo', 'doing', 'done'];
 // Compared against when the username doesn't exist, so a wrong username takes as long as a
 // wrong password and response timing doesn't reveal which usernames are registered.
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
+const MIN_PASSWORD_LENGTH = 8;
+
+// Brute-force protection. Limits are checked *before* bcrypt runs, so blocked attempts also
+// cost no hashing time.
+const FIFTEEN_MIN = 15 * 60 * 1000;
+// 5 failed logins for one username from one IP...
+// (Keyed on IP + username on purpose: a username-only limit would let anyone lock a classmate
+// out of their account just by typing wrong passwords for them.)
+const loginFailuresPerAccount = createLimiter({ max: 5, windowMs: FIFTEEN_MIN });
+// ...and 20 failed logins from one IP across all usernames (stops password spraying).
+const loginFailuresPerIp = createLimiter({ max: 20, windowMs: FIFTEEN_MIN });
+// 10 sign-up attempts per IP, successful or not.
+const signupsPerIp = createLimiter({ max: 10, windowMs: FIFTEEN_MIN });
+
+// Sends a 429 with a Retry-After header and a human-readable wait time.
+function tooMany(res, seconds, what) {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  res.set('Retry-After', String(seconds));
+  return res
+    .status(429)
+    .json({ error: `Too many ${what}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
+}
 
 const app = express();
 app.use(express.json({ limit: '32kb' })); // plenty for a task (description max 2000 chars)
@@ -101,12 +124,18 @@ function validateTask(body, partial) {
 // ---------- auth ----------
 
 app.post('/api/signup', (req, res, next) => {
+  const wait = signupsPerIp.retryAfter(req.ip);
+  if (wait) return tooMany(res, wait, 'sign-up attempts');
+  signupsPerIp.hit(req.ip);
+
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
   if (!/^[A-Za-z0-9_.-]{3,30}$/.test(username)) {
     return res.status(400).json({ error: 'Username: 3–30 letters, numbers, _ . or -' });
   }
-  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+  }
 
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get();
   if (n >= MAX_USERS) {
@@ -130,11 +159,20 @@ app.post('/api/signup', (req, res, next) => {
 app.post('/api/login', (req, res, next) => {
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
+
+  // Once blocked, even the correct password is refused until the window expires.
+  const accountKey = `${req.ip}|${username.toLowerCase()}`;
+  const wait = Math.max(loginFailuresPerAccount.retryAfter(accountKey), loginFailuresPerIp.retryAfter(req.ip));
+  if (wait) return tooMany(res, wait, 'failed login attempts');
+
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
   const passwordOk = bcrypt.compareSync(password, user ? user.password_hash : DUMMY_HASH);
   if (!user || !passwordOk) {
+    loginFailuresPerAccount.hit(accountKey);
+    loginFailuresPerIp.hit(req.ip);
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
+  loginFailuresPerAccount.reset(accountKey);
   req.session.regenerate((err) => {
     if (err) return next(err);
     req.session.userId = user.id;
@@ -189,6 +227,24 @@ app.post('/api/tasks', requireLogin, (req, res) => {
   res.status(201).json(withPermission(getTask(lastInsertRowid), req.session.userId));
 });
 
+// Optimistic concurrency: every write says which `version` of the task it was based on.
+// If someone else has changed the task since, the write is refused with 409 instead of
+// silently overwriting their change.
+const CONFLICT_ERROR =
+  'Someone else changed this task since you loaded the board. The board has been refreshed: check it and try again.';
+
+// Checks the `version` a write was based on. Returns { status, error } to send, or null if OK.
+// `required` is true for PATCH; DELETE accepts a missing version.
+function checkVersion(body, task, required) {
+  const version = body?.version;
+  if (version === undefined && !required) return null;
+  if (!Number.isInteger(version)) {
+    return { status: 400, error: 'Missing or invalid task version. Refresh the board and try again.' };
+  }
+  if (version !== task.version) return { status: 409, error: CONFLICT_ERROR };
+  return null;
+}
+
 // Update (includes moving between columns): creator or assignee only.
 app.patch('/api/tasks/:id', requireLogin, (req, res) => {
   const task = getTask(Number(req.params.id));
@@ -196,27 +252,38 @@ app.patch('/api/tasks/:id', requireLogin, (req, res) => {
   if (!canChange(task, req.session.userId)) {
     return res.status(403).json({ error: 'Only the task creator or assignee can change this task.' });
   }
+  const stale = checkVersion(req.body, task, true);
+  if (stale) return res.status(stale.status).json({ error: stale.error });
+  const version = task.version;
+
   const { data, error } = validateTask(req.body, true);
   if (error) return res.status(400).json({ error });
   const fields = Object.keys(data);
   if (fields.length) {
     const sets = fields.map((f) => `${f} = ?`).join(', ');
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => data[f]),
-      task.id
-    );
+    // `AND version = ?` makes the check-and-write atomic.
+    const result = db
+      .prepare(
+        `UPDATE tasks SET ${sets}, version = version + 1, updated_at = datetime('now')
+         WHERE id = ? AND version = ?`
+      )
+      .run(...fields.map((f) => data[f]), task.id, version);
+    if (result.changes === 0) return res.status(409).json({ error: CONFLICT_ERROR });
   }
   res.json(withPermission(getTask(task.id), req.session.userId));
 });
 
-// Delete: creator or assignee only.
+// Delete: creator or assignee only. `version` is optional here; when given, a stale delete gets 409.
 app.delete('/api/tasks/:id', requireLogin, (req, res) => {
   const task = getTask(Number(req.params.id));
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (!canChange(task, req.session.userId)) {
     return res.status(403).json({ error: 'Only the task creator or assignee can delete this task.' });
   }
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+  const stale = checkVersion(req.body, task, false);
+  if (stale) return res.status(stale.status).json({ error: stale.error });
+  const result = db.prepare('DELETE FROM tasks WHERE id = ? AND version = ?').run(task.id, task.version);
+  if (result.changes === 0) return res.status(409).json({ error: CONFLICT_ERROR });
   res.json({ ok: true });
 });
 

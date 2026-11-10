@@ -27,8 +27,16 @@ db.exec(`
     due_date    TEXT,
     created_by  INTEGER NOT NULL REFERENCES users(id),
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    version     INTEGER NOT NULL DEFAULT 1
   );
 `);
+
+// Migration for databases created before the `version` column existed.
+// `version` goes up by one on every update, so the server can reject saves made from a stale copy.
+const taskColumns = db.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name);
+if (!taskColumns.includes('version')) {
+  db.exec('ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+}
 
 module.exports = db;
