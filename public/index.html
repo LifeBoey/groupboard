@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GroupBoard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>GroupBoard</h1>
+    <div class="topbar-right">
+      <span id="me"></span>
+      <button type="button" id="refresh" title="See your teammates' latest changes">↻ Refresh</button>
+      <button type="button" id="logout">Log out</button>
+    </div>
+  </header>
+
+  <p class="rule-note">Everyone can see every task. Only a task's <strong>creator</strong> or <strong>assignee</strong> can edit, move, or delete it.</p>
+  <p class="error banner" id="board-error" role="alert"></p>
+
+  <main class="board">
+    <section class="column" data-status="todo">
+      <div class="column-head"><h2>To Do</h2><span class="count"></span></div>
+      <button type="button" class="add-task primary">+ Add task</button>
+      <ul class="cards"></ul>
+    </section>
+    <section class="column" data-status="doing">
+      <div class="column-head"><h2>In Progress</h2><span class="count"></span></div>
+      <ul class="cards"></ul>
+    </section>
+    <section class="column" data-status="done">
+      <div class="column-head"><h2>Done</h2><span class="count"></span></div>
+      <ul class="cards"></ul>
+    </section>
+  </main>
+
+  <dialog id="task-dialog">
+    <form id="task-form" method="dialog">
+      <h2 id="dialog-title">New task</h2>
+      <label>Title *
+        <input name="title" required maxlength="120">
+      </label>
+      <label>Description
+        <textarea name="description" rows="4" maxlength="2000"></textarea>
+      </label>
+      <div class="row">
+        <label>Assignee
+          <select name="assignee_id"></select>
+        </label>
+        <label>Due date
+          <input name="due_date" type="date">
+        </label>
+      </div>
+      <label>Status
+        <select name="status">
+          <option value="todo">To Do</option>
+          <option value="doing">In Progress</option>
+          <option value="done">Done</option>
+        </select>
+      </label>
+      <p class="error" id="dialog-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="delete-task" class="danger">Delete</button>
+        <span class="spacer"></span>
+        <button type="button" id="cancel-task">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

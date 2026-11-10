@@ -1,0 +1,19 @@
+{
+  "name": "groupboard",
+  "version": "1.0.0",
+  "description": "A tiny Trello-style task board for a student project group of up to 10 people.",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node scripts/seed.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1"
+  }
+}

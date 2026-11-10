@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GroupBoard · Log in</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <h1>GroupBoard</h1>
+    <p class="tagline">One board for your project group: who's doing what, before the deadline.</p>
+
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-mode="login">Log in</button>
+      <button type="button" class="tab" data-mode="signup">Sign up</button>
+    </div>
+
+    <form id="auth-form">
+      <label>Username
+        <input name="username" autocomplete="username" required minlength="3" maxlength="30">
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required minlength="6">
+      </label>
+      <p class="error" id="auth-error" role="alert"></p>
+      <button type="submit" class="primary" id="auth-submit">Log in</button>
+      <p class="hint" id="auth-hint" hidden>Up to 10 members can join this board.</p>
+    </form>
+  </main>
+
+  <script>
+    let mode = 'login';
+    const form = document.getElementById('auth-form');
+    const errorEl = document.getElementById('auth-error');
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        mode = tab.dataset.mode;
+        document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+        document.getElementById('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
+        document.getElementById('auth-hint').hidden = mode === 'login';
+        form.password.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+        errorEl.textContent = '';
+      });
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.textContent = '';
+      const res = await fetch(`/api/${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: form.username.value, password: form.password.value }),
+      });
+      if (res.ok) location.href = '/';
+      else errorEl.textContent = (await res.json()).error || 'Something went wrong.';
+    });
+  </script>
+</body>
+</html>
