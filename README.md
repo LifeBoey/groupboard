@@ -23,7 +23,7 @@ A tiny Trello for one student project group: a single board with three columns w
 Other limits:
 - At most **10 accounts**. The 11th sign-up is refused.
 - New passwords need at least **8 characters**.
-- **Login rate limits:** after 5 failed logins for one username, or 20 from one IP address, further attempts get **429 Too Many Requests** for 15 minutes, even with the right password. Sign-up is limited to 10 attempts per IP address every 15 minutes. The counters are kept in memory, so restarting the server resets them.
+- **Login rate limits:** after 5 failed logins for one username from the same IP address, or 20 failed logins of any kind from one IP address, further attempts from that IP get **429 Too Many Requests** for 15 minutes, even with the right password. Everyone behind one IP address (one machine or one shared Wi-Fi) shares the 20-failure budget. Sign-up is limited to 10 attempts per IP address every 15 minutes. The counters are kept in memory, so restarting the server resets them.
 - Any member can create a task and can assign it to anyone in the group, or leave it unassigned.
 - The assignee can hand a task to someone else or unassign themselves. Once they do, the rule no longer lets them change it, unless they also created it.
 - Delete is permanent, after a confirmation prompt.

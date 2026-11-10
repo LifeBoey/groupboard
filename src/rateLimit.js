@@ -28,8 +28,14 @@ function createLimiter({ max, windowMs }) {
     },
     hit(key) {
       const entry = current(key);
-      if (entry) entry.count += 1;
-      else entries.set(key, { count: 1, resetAt: Date.now() + windowMs });
+      if (!entry) {
+        entries.set(key, { count: 1, resetAt: Date.now() + windowMs });
+        return;
+      }
+      entry.count += 1;
+      // The hit that reaches the limit starts a full window from now, so a lockout always
+      // lasts `windowMs` (otherwise failures spread across a window could lock for seconds).
+      if (entry.count === max) entry.resetAt = Date.now() + windowMs;
     },
     reset(key) {
       entries.delete(key);
@@ -37,13 +43,4 @@ function createLimiter({ max, windowMs }) {
   };
 }
 
-// Sends a 429 with a Retry-After header and a human-readable wait time.
-function tooMany(res, seconds, what) {
-  const minutes = Math.max(1, Math.ceil(seconds / 60));
-  res.set('Retry-After', String(seconds));
-  return res
-    .status(429)
-    .json({ error: `Too many ${what}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
-}
-
-module.exports = { createLimiter, tooMany };
+module.exports = { createLimiter };

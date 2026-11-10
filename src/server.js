@@ -4,7 +4,7 @@ const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
-const { createLimiter, tooMany } = require('./rateLimit');
+const { createLimiter } = require('./rateLimit');
 
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_USERS = 10;
@@ -12,17 +12,28 @@ const STATUSES = ['todo', 'doing', 'done'];
 // Compared against when the username doesn't exist, so a wrong username takes as long as a
 // wrong password and response timing doesn't reveal which usernames are registered.
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
-const MIN_PASSWORD = 8;
+const MIN_PASSWORD_LENGTH = 8;
 
 // Brute-force protection. Limits are checked *before* bcrypt runs, so blocked attempts also
 // cost no hashing time.
 const FIFTEEN_MIN = 15 * 60 * 1000;
 // 5 failed logins for one username from one IP...
+// (Keyed on IP + username on purpose: a username-only limit would let anyone lock a classmate
+// out of their account just by typing wrong passwords for them.)
 const loginFailuresPerAccount = createLimiter({ max: 5, windowMs: FIFTEEN_MIN });
 // ...and 20 failed logins from one IP across all usernames (stops password spraying).
 const loginFailuresPerIp = createLimiter({ max: 20, windowMs: FIFTEEN_MIN });
 // 10 sign-up attempts per IP, successful or not.
 const signupsPerIp = createLimiter({ max: 10, windowMs: FIFTEEN_MIN });
+
+// Sends a 429 with a Retry-After header and a human-readable wait time.
+function tooMany(res, seconds, what) {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  res.set('Retry-After', String(seconds));
+  return res
+    .status(429)
+    .json({ error: `Too many ${what}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
+}
 
 const app = express();
 app.use(express.json());
@@ -122,8 +133,8 @@ app.post('/api/signup', (req, res) => {
   if (!/^[A-Za-z0-9_.-]{3,30}$/.test(username)) {
     return res.status(400).json({ error: 'Username: 3–30 letters, numbers, _ . or -' });
   }
-  if (password.length < MIN_PASSWORD) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters.` });
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
   }
 
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get();
