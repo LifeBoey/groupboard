@@ -218,9 +218,11 @@ function changedFields(task, body) {
   return changes;
 }
 
-// A 409 means the task changed under you: close the dialog, reload, and explain why.
+// The task changed under you: it was edited (409), deleted (404), or reassigned so you can no
+// longer change it (403). Close the dialog, reload the board, and explain why.
+// Anything else (e.g. a validation error) stays in the dialog so you can fix it.
 async function handleWriteError(err) {
-  if (err.status === 409 || err.status === 404) {
+  if (err.status === 409 || err.status === 404 || err.status === 403) {
     dialog.close();
     await load();
     boardError.textContent = err.message;
