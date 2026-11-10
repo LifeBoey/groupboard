@@ -21,11 +21,11 @@
         <input name="username" autocomplete="username" required minlength="3" maxlength="30">
       </label>
       <label>Password
-        <input name="password" type="password" autocomplete="current-password" required minlength="6">
+        <input name="password" type="password" autocomplete="current-password" required>
       </label>
       <p class="error" id="auth-error" role="alert"></p>
       <button type="submit" class="primary" id="auth-submit">Log in</button>
-      <p class="hint" id="auth-hint" hidden>Up to 10 members can join this board.</p>
+      <p class="hint" id="auth-hint" hidden>Passwords need at least 8 characters. Up to 10 members can join this board.</p>
     </form>
   </main>
 
@@ -41,6 +41,9 @@
         document.getElementById('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
         document.getElementById('auth-hint').hidden = mode === 'login';
         form.password.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+        // The 8-character minimum only applies to new accounts; older passwords can still log in.
+        if (mode === 'signup') form.password.setAttribute('minlength', '8');
+        else form.password.removeAttribute('minlength');
         errorEl.textContent = '';
       });
     });

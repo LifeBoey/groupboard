@@ -4,6 +4,7 @@ const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const { createLimiter, tooMany } = require('./rateLimit');
 
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_USERS = 10;
@@ -11,6 +12,17 @@ const STATUSES = ['todo', 'doing', 'done'];
 // Compared against when the username doesn't exist, so a wrong username takes as long as a
 // wrong password and response timing doesn't reveal which usernames are registered.
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
+const MIN_PASSWORD = 8;
+
+// Brute-force protection. Limits are checked *before* bcrypt runs, so blocked attempts also
+// cost no hashing time.
+const FIFTEEN_MIN = 15 * 60 * 1000;
+// 5 failed logins for one username from one IP...
+const loginFailuresPerAccount = createLimiter({ max: 5, windowMs: FIFTEEN_MIN });
+// ...and 20 failed logins from one IP across all usernames (stops password spraying).
+const loginFailuresPerIp = createLimiter({ max: 20, windowMs: FIFTEEN_MIN });
+// 10 sign-up attempts per IP, successful or not.
+const signupsPerIp = createLimiter({ max: 10, windowMs: FIFTEEN_MIN });
 
 const app = express();
 app.use(express.json());
@@ -101,12 +113,18 @@ function validateTask(body, partial) {
 // ---------- auth ----------
 
 app.post('/api/signup', (req, res) => {
+  const wait = signupsPerIp.retryAfter(req.ip);
+  if (wait) return tooMany(res, wait, 'sign-up attempts');
+  signupsPerIp.hit(req.ip);
+
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
   if (!/^[A-Za-z0-9_.-]{3,30}$/.test(username)) {
     return res.status(400).json({ error: 'Username: 3–30 letters, numbers, _ . or -' });
   }
-  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (password.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters.` });
+  }
 
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get();
   if (n >= MAX_USERS) {
@@ -129,11 +147,20 @@ app.post('/api/signup', (req, res) => {
 app.post('/api/login', (req, res) => {
   const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body.password === 'string' ? req.body.password : '';
+
+  // Once blocked, even the correct password is refused until the window expires.
+  const accountKey = `${req.ip}|${username.toLowerCase()}`;
+  const wait = Math.max(loginFailuresPerAccount.retryAfter(accountKey), loginFailuresPerIp.retryAfter(req.ip));
+  if (wait) return tooMany(res, wait, 'failed login attempts');
+
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
   const passwordOk = bcrypt.compareSync(password, user ? user.password_hash : DUMMY_HASH);
   if (!user || !passwordOk) {
+    loginFailuresPerAccount.hit(accountKey);
+    loginFailuresPerIp.hit(req.ip);
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
+  loginFailuresPerAccount.reset(accountKey);
   req.session.regenerate(() => {
     req.session.userId = user.id;
     res.json({ id: user.id, username: user.username });
