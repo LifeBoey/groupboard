@@ -5,7 +5,7 @@ const STATUS_LABEL = { todo: 'To Do', doing: 'In Progress', done: 'Done' };
 let me = null;
 let users = [];
 let tasks = [];
-let editingId = null; // null = creating a new task
+let editingTask = null; // the task as it was when the dialog opened; null = creating a new task
 
 const dialog = document.getElementById('task-dialog');
 const form = document.getElementById('task-form');
@@ -23,7 +23,11 @@ async function api(method, url, body) {
     throw new Error('Not logged in');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Something went wrong.');
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -123,7 +127,8 @@ async function moveTask(task, dir) {
   if (!status) return;
   let error = '';
   try {
-    await api('PATCH', `/api/tasks/${task.id}`, { status });
+    // Send the version this card was rendered from, so a stale move is refused (409), not applied.
+    await api('PATCH', `/api/tasks/${task.id}`, { status, version: task.version });
   } catch (err) {
     error = err.message;
   }
@@ -133,7 +138,7 @@ async function moveTask(task, dir) {
 }
 
 function openDialog(task) {
-  editingId = task ? task.id : null;
+  editingTask = task || null;
   dialogError.textContent = '';
   document.getElementById('dialog-title').textContent = task ? 'Edit task' : 'New task';
   document.getElementById('delete-task').hidden = !task;
@@ -160,37 +165,80 @@ form.addEventListener('submit', async (e) => {
     due_date: form.due_date.value || null,
     status: form.status.value,
   };
+  if (!editingTask) {
+    try {
+      await api('POST', '/api/tasks', body);
+      dialog.close();
+      await load();
+    } catch (err) {
+      dialogError.textContent = err.message;
+    }
+    return;
+  }
+
+  // Editing: send only the fields you actually changed, plus the version you started from,
+  // so you never overwrite a teammate's change to a field you didn't touch.
+  const changes = changedFields(editingTask, body);
+  if (!Object.keys(changes).length) {
+    dialog.close();
+    return;
+  }
   // Warn before a save that would remove your own right to change this task
   // (you're not the creator and you're assigning it away from yourself).
-  if (editingId) {
-    const task = tasks.find((t) => t.id === editingId);
-    const keepsAccess = task && (task.created_by === me.id || Number(body.assignee_id) === me.id);
-    if (task && !keepsAccess &&
-        !confirm("After saving, you won't be able to edit, move or delete this task any more " +
-                 '(only its creator or assignee can). Continue?')) {
-      return;
-    }
+  const newAssignee = 'assignee_id' in changes ? changes.assignee_id : editingTask.assignee_id;
+  const keepsAccess = editingTask.created_by === me.id || Number(newAssignee) === me.id;
+  if (!keepsAccess &&
+      !confirm("After saving, you won't be able to edit, move or delete this task any more " +
+               '(only its creator or assignee can). Continue?')) {
+    return;
   }
   try {
-    if (editingId) await api('PATCH', `/api/tasks/${editingId}`, body);
-    else await api('POST', '/api/tasks', body);
+    await api('PATCH', `/api/tasks/${editingTask.id}`, { ...changes, version: editingTask.version });
     dialog.close();
     await load();
   } catch (err) {
-    dialogError.textContent = err.message;
+    await handleWriteError(err);
   }
 });
+
+// Compares the form values with the task as it was when the dialog opened.
+function changedFields(task, body) {
+  const before = {
+    title: task.title,
+    description: task.description,
+    assignee_id: task.assignee_id != null ? String(task.assignee_id) : null,
+    due_date: task.due_date || null,
+    status: task.status,
+  };
+  const after = { ...body, title: body.title.trim(), description: body.description.trim() };
+  const changes = {};
+  for (const key of Object.keys(before)) {
+    if (after[key] !== before[key]) changes[key] = body[key];
+  }
+  return changes;
+}
+
+// A 409 means the task changed under you: close the dialog, reload, and explain why.
+async function handleWriteError(err) {
+  if (err.status === 409 || err.status === 404) {
+    dialog.close();
+    await load();
+    boardError.textContent = err.message;
+  } else {
+    dialogError.textContent = err.message;
+  }
+}
 
 document.getElementById('cancel-task').addEventListener('click', () => dialog.close());
 
 document.getElementById('delete-task').addEventListener('click', async () => {
-  if (!editingId || !confirm('Delete this task? This cannot be undone.')) return;
+  if (!editingTask || !confirm('Delete this task? This cannot be undone.')) return;
   try {
-    await api('DELETE', `/api/tasks/${editingId}`);
+    await api('DELETE', `/api/tasks/${editingTask.id}`, { version: editingTask.version });
     dialog.close();
     await load();
   } catch (err) {
-    dialogError.textContent = err.message;
+    await handleWriteError(err);
   }
 });
 
